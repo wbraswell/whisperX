@@ -1,4 +1,5 @@
 import os
+from functools import partial
 from typing import Callable, Text, Union
 from typing import Optional
 
@@ -17,6 +18,7 @@ from whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 
+# WHISPERX_PYANNOTE_VAD_PROGRESS_V1
 
 def load_vad_model(device, vad_onset=0.500, vad_offset=0.363, token=None, model_fp=None):
     model_dir = torch.hub._get_torch_home()
@@ -222,10 +224,16 @@ class VoiceActivitySegmentation(VoiceActivityDetection):
             if self.CACHED_SEGMENTATION in file:
                 segmentations = file[self.CACHED_SEGMENTATION]
             else:
-                segmentations = self._segmentation(file)
+                segmentations = self._segmentation(
+                    file,
+                    hook=partial(hook, "segmentation", None, file=file),
+                )
                 file[self.CACHED_SEGMENTATION] = segmentations
         else:
-            segmentations: SlidingWindowFeature = self._segmentation(file)
+            segmentations: SlidingWindowFeature = self._segmentation(
+                file,
+                hook=partial(hook, "segmentation", None, file=file),
+            )
 
         return segmentations
 
@@ -238,7 +246,7 @@ class Pyannote(Vad):
         self.vad_pipeline = load_vad_model(device, token=token, model_fp=model_fp)
 
     def __call__(self, audio: AudioFile, **kwargs):
-        return self.vad_pipeline(audio)
+        return self.vad_pipeline(audio, **kwargs)
 
     @staticmethod
     def preprocess_audio(audio):

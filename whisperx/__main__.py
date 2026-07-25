@@ -23,6 +23,12 @@ def cli():
 
     parser.add_argument("--output_dir", "-o", type=str, default=".", help="directory to save the outputs")
     parser.add_argument("--output_format", "-f", type=str, default="all", choices=["all", "srt", "vtt", "txt", "tsv", "json", "aud"], help="format of the output file; if not specified, all available formats will be produced")
+    parser.add_argument("--checkpoint_dir", type=str, default=None, help="directory for durable stage checkpoints; defaults to --output_dir")
+    parser.add_argument("--no_checkpoints", action="store_true", help="disable stage checkpoints")
+    parser.add_argument("--resume_from", type=str, default="none", choices=["none", "auto", "transcription", "alignment", "diarization"], help="resume from a compatible checkpoint")
+    parser.add_argument("--stop_after", type=str, default="write", choices=["transcription", "alignment", "diarization", "write"], help="stop after a completed stage")
+    parser.add_argument("--diarize_only", action="store_true", help="shortcut for --diarize --resume_from alignment")
+    parser.add_argument("--skip_model_preflight", action="store_true", help="skip early model validation")
     parser.add_argument("--verbose", type=str2bool, default=True, help="whether to print out the progress and debug messages")
     parser.add_argument("--log-level", type=str, default=None, choices=["debug", "info", "warning", "error", "critical"], help="logging level (overrides --verbose if set)")
 

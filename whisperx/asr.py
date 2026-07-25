@@ -18,6 +18,7 @@ from whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 
+# WHISPERX_VAD_STAGE_PROGRESS_V1
 
 def find_numeral_symbol_tokens(tokenizer):
     numeral_symbol_tokens = []
@@ -206,12 +207,21 @@ class FasterWhisperPipeline(Pipeline):
         combined_progress=False,
         verbose=False,
         progress_callback: ProgressCallback = None,
+        vad_progress_callback: ProgressCallback = None,
     ) -> TranscriptionResult:
         if isinstance(audio, str):
             audio = load_audio(audio)
 
         def data(audio, segments):
-            for seg in segments:
+            total_segments = len(segments)
+            for segment_index, seg in enumerate(segments):
+                if print_progress:
+                    print(
+                        "WhisperX transcription chunk "
+                        f"{segment_index + 1}/{total_segments}: starting audio "
+                        f"{seg['start']:.3f} through {seg['end']:.3f} seconds",
+                        flush=True,
+                    )
                 f1 = int(seg['start'] * SAMPLE_RATE)
                 f2 = int(seg['end'] * SAMPLE_RATE)
                 # print(f2-f1)
@@ -226,13 +236,26 @@ class FasterWhisperPipeline(Pipeline):
             waveform = Pyannote.preprocess_audio(audio)
             merge_chunks = Pyannote.merge_chunks
 
-        vad_segments = self.vad_model({"waveform": waveform, "sample_rate": SAMPLE_RATE})
+        vad_hook = None
+        if vad_progress_callback is not None:
+            def vad_hook(step_name, step_artifact, file=None, total=None, completed=None):
+                if total is not None and completed is not None and total > 0:
+                    vad_progress_callback(min(completed / total, 1.0) * 100)
+
+            vad_progress_callback(0.0)
+
+        vad_segments = self.vad_model(
+            {"waveform": waveform, "sample_rate": SAMPLE_RATE},
+            **({"hook": vad_hook} if vad_hook is not None else {}),
+        )
         vad_segments = merge_chunks(
             vad_segments,
             chunk_size,
             onset=self._vad_params["vad_onset"],
             offset=self._vad_params["vad_offset"],
         )
+        if vad_progress_callback is not None:
+            vad_progress_callback(100.0)
         if self.tokenizer is None:
             language = language or self.detect_language(audio)
             task = task or "transcribe"
@@ -264,11 +287,13 @@ class FasterWhisperPipeline(Pipeline):
         segments: List[SingleSegment] = []
         batch_size = batch_size or self._batch_size
         total_segments = len(vad_segments)
+        if progress_callback is not None:
+            progress_callback(0.0)
         for idx, out in enumerate(self.__call__(data(audio, vad_segments), batch_size=batch_size, num_workers=num_workers)):
-            if print_progress:
+            if print_progress and progress_callback is None:
                 base_progress = ((idx + 1) / total_segments) * 100
                 percent_complete = base_progress / 2 if combined_progress else base_progress
-                print(f"Progress: {percent_complete:.2f}%...")
+                print(f"Progress: {percent_complete:.2f}%...", flush=True)
             if progress_callback is not None:
                 progress_callback(((idx + 1) / total_segments) * 100)
             text = out['text']
@@ -277,7 +302,11 @@ class FasterWhisperPipeline(Pipeline):
                 text = text[0]
                 avg_logprob = avg_logprob[0]
             if verbose:
-                print(f"Transcript: [{round(vad_segments[idx]['start'], 3)} --> {round(vad_segments[idx]['end'], 3)}] {text}")
+                print(
+                    f"Transcript: [{round(vad_segments[idx]['start'], 3)} --> "
+                    f"{round(vad_segments[idx]['end'], 3)}] {text}",
+                    flush=True,
+                )
             segments.append(
                 {
                     "text": text,
