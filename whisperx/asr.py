@@ -208,9 +208,19 @@ class FasterWhisperPipeline(Pipeline):
         verbose=False,
         progress_callback: ProgressCallback = None,
         vad_progress_callback: ProgressCallback = None,
+        initial_result: Optional[TranscriptionResult] = None,
+        checkpoint_callback=None,
     ) -> TranscriptionResult:
         if isinstance(audio, str):
             audio = load_audio(audio)
+        checkpoint_language = initial_result.get("language") if initial_result else None
+        if language is None:
+            language = checkpoint_language
+        elif checkpoint_language is not None and checkpoint_language != language:
+            raise RuntimeError(
+                "Incremental transcription checkpoint language does not match the "
+                "requested transcription language. Remove the partial checkpoint."
+            )
 
         def data(audio, segments):
             total_segments = len(segments)
@@ -284,18 +294,40 @@ class FasterWhisperPipeline(Pipeline):
             new_suppressed_tokens = list(set(new_suppressed_tokens))
             self.options = replace(self.options, suppress_tokens=new_suppressed_tokens)
 
-        segments: List[SingleSegment] = []
+        segments: List[SingleSegment] = (
+            list(initial_result.get("segments", [])) if initial_result else []
+        )
         batch_size = batch_size or self._batch_size
         total_segments = len(vad_segments)
+        completed_segment_count = len(segments)
+        if completed_segment_count > total_segments:
+            raise RuntimeError(
+                "Incremental transcription checkpoint contains more segments than the "
+                "current voice activity detection result. Remove the partial checkpoint."
+            )
+        for segment_index, segment in enumerate(segments):
+            vad_segment = vad_segments[segment_index]
+            if (
+                round(vad_segment["start"], 3) != segment.get("start")
+                or round(vad_segment["end"], 3) != segment.get("end")
+            ):
+                raise RuntimeError(
+                    "Incremental transcription checkpoint does not match the current "
+                    "voice activity detection result. Remove the partial checkpoint."
+                )
         if progress_callback is not None:
-            progress_callback(0.0)
-        for idx, out in enumerate(self.__call__(data(audio, vad_segments), batch_size=batch_size, num_workers=num_workers)):
-            if print_progress and progress_callback is None:
-                base_progress = ((idx + 1) / total_segments) * 100
-                percent_complete = base_progress / 2 if combined_progress else base_progress
-                print(f"Progress: {percent_complete:.2f}%...", flush=True)
-            if progress_callback is not None:
-                progress_callback(((idx + 1) / total_segments) * 100)
+            progress_callback(
+                (completed_segment_count / total_segments) * 100 if total_segments else 100.0
+            )
+        remaining_vad_segments = vad_segments[completed_segment_count:]
+        for remaining_index, out in enumerate(
+            self.__call__(
+                data(audio, remaining_vad_segments),
+                batch_size=batch_size,
+                num_workers=num_workers,
+            )
+        ):
+            idx = completed_segment_count + remaining_index
             text = out['text']
             avg_logprob = out['avg_logprob']
             if batch_size in [0, 1, None]:
@@ -315,6 +347,14 @@ class FasterWhisperPipeline(Pipeline):
                     "avg_logprob": avg_logprob,
                 }
             )
+            if checkpoint_callback is not None:
+                checkpoint_callback({"segments": list(segments), "language": language})
+            if print_progress and progress_callback is None:
+                base_progress = ((idx + 1) / total_segments) * 100
+                percent_complete = base_progress / 2 if combined_progress else base_progress
+                print(f"Progress: {percent_complete:.2f}%...", flush=True)
+            if progress_callback is not None:
+                progress_callback(((idx + 1) / total_segments) * 100)
 
         # revert the tokenizer if multilingual inference is enabled
         if self.preset_language is None:

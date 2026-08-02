@@ -21,6 +21,7 @@ from whisperx.log_utils import get_logger
 logger = get_logger(__name__)
 
 CHECKPOINT_FORMAT = "whisperx-stage-checkpoint-v1"
+PARTIAL_TRANSCRIPTION_STAGE = "transcription-partial"
 
 
 def build_stage_progress_callback(enabled, stage_number, total_stages, stage_name, minimum_increment=1.0):
@@ -110,6 +111,15 @@ def read_checkpoint(checkpoint_dir, audio_path, stage):
             )
     logger.info(f"Loaded {stage} checkpoint: {source}")
     return payload["result"]
+
+
+def remove_checkpoint(checkpoint_dir, audio_path, stage):
+    source = checkpoint_path(checkpoint_dir, audio_path, stage)
+    try:
+        source.unlink()
+    except FileNotFoundError:
+        return
+    logger.info(f"Removed {stage} checkpoint: {source}")
 
 
 def preflight_diarization_model(model_name, token, cache_dir):
@@ -308,6 +318,34 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
         logger.info("Finished loading transcription and voice activity detection models.")
         for audio_path in remaining_audio_paths:
             audio = load_audio(audio_path)
+            partial_result = None
+            if checkpoints_enabled:
+                if requested_resume_stage == "none":
+                    remove_checkpoint(
+                        checkpoint_dir,
+                        audio_path,
+                        PARTIAL_TRANSCRIPTION_STAGE,
+                    )
+                else:
+                    partial_result = read_checkpoint(
+                        checkpoint_dir,
+                        audio_path,
+                        PARTIAL_TRANSCRIPTION_STAGE,
+                    )
+                    if partial_result is not None:
+                        logger.info(
+                            "Resuming transcription from "
+                            f"{len(partial_result.get('segments', []))} completed chunks."
+                        )
+
+            def incremental_checkpoint(result):
+                write_checkpoint(
+                    checkpoint_dir,
+                    audio_path,
+                    PARTIAL_TRANSCRIPTION_STAGE,
+                    result,
+                )
+
             logger.info("Performing transcription...")
             result = model.transcribe(
                 audio,
@@ -317,9 +355,12 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
                 verbose=verbose,
                 progress_callback=transcription_progress,
                 vad_progress_callback=vad_progress,
+                initial_result=partial_result,
+                checkpoint_callback=incremental_checkpoint if checkpoints_enabled else None,
             )
             if checkpoints_enabled:
                 write_checkpoint(checkpoint_dir, audio_path, "transcription", result)
+                remove_checkpoint(checkpoint_dir, audio_path, PARTIAL_TRANSCRIPTION_STAGE)
             results.append((result, audio_path, "transcription"))
         del model
         gc.collect()
