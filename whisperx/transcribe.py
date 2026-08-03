@@ -1,7 +1,9 @@
 import argparse
 import gc
+import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import warnings
 from pathlib import Path
@@ -20,8 +22,10 @@ from whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 
-CHECKPOINT_FORMAT = "whisperx-stage-checkpoint-v1"
+__version__ = "0.004"
+CHECKPOINT_FORMAT = "whisperx-stage-checkpoint-v2"
 PARTIAL_TRANSCRIPTION_STAGE = "transcription-partial"
+_AUDIO_IDENTITY_CACHE = {}
 
 
 def build_stage_progress_callback(enabled, stage_number, total_stages, stage_name, minimum_increment=1.0):
@@ -51,16 +55,61 @@ def checkpoint_path(checkpoint_dir, audio_path, stage):
     return Path(checkpoint_dir) / f"{stem}.whisperx-{stage}.json"
 
 
+def audio_identity(audio_path):
+    real_path = os.path.realpath(audio_path)
+    stat_result = os.stat(real_path)
+    cache_key = (
+        real_path,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+    )
+    cached_identity = _AUDIO_IDENTITY_CACHE.get(cache_key)
+    if cached_identity is not None:
+        return cached_identity
+
+    digest = hashlib.sha256()
+    with open(real_path, "rb") as audio_file:
+        while True:
+            block = audio_file.read(8 * 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+
+    identity = {
+        "audio_name": Path(real_path).name,
+        "audio_size": stat_result.st_size,
+        "audio_sha256": digest.hexdigest(),
+    }
+    _AUDIO_IDENTITY_CACHE.clear()
+    _AUDIO_IDENTITY_CACHE[cache_key] = identity
+    return identity
+
+
 def checkpoint_metadata(audio_path, stage, result):
-    stat_result = os.stat(audio_path)
+    identity = audio_identity(audio_path)
     return {
         "format": CHECKPOINT_FORMAT,
         "stage": stage,
-        "audio_path": os.path.realpath(audio_path),
-        "audio_size": stat_result.st_size,
-        "audio_mtime_ns": stat_result.st_mtime_ns,
+        "audio_name": identity["audio_name"],
+        "audio_size": identity["audio_size"],
+        "audio_sha256": identity["audio_sha256"],
+        "source_version": __version__,
         "result": result,
     }
+
+
+def run_checkpoint_hook(checkpoint_path_value):
+    checkpoint_hook = os.environ.get("WHISPERX_CHECKPOINT_HOOK")
+    if not checkpoint_hook:
+        return
+    if not os.path.isfile(checkpoint_hook) or not os.access(checkpoint_hook, os.X_OK):
+        raise RuntimeError(
+            "WHISPERX_CHECKPOINT_HOOK is not an executable file: "
+            f"{checkpoint_hook}"
+        )
+    subprocess.run([checkpoint_hook, str(checkpoint_path_value)], check=True)
+    logger.info(f"Checkpoint hook completed: {checkpoint_path_value}")
 
 
 def write_checkpoint(checkpoint_dir, audio_path, stage, result):
@@ -87,6 +136,7 @@ def write_checkpoint(checkpoint_dir, audio_path, stage, result):
             pass
         raise
     logger.info(f"Saved {stage} checkpoint: {destination}")
+    run_checkpoint_hook(destination)
 
 
 def read_checkpoint(checkpoint_dir, audio_path, stage):
@@ -95,13 +145,12 @@ def read_checkpoint(checkpoint_dir, audio_path, stage):
         return None
     with source.open("r", encoding="utf-8") as checkpoint_file:
         payload = json.load(checkpoint_file)
-    stat_result = os.stat(audio_path)
+    identity = audio_identity(audio_path)
     expected = {
         "format": CHECKPOINT_FORMAT,
         "stage": stage,
-        "audio_path": os.path.realpath(audio_path),
-        "audio_size": stat_result.st_size,
-        "audio_mtime_ns": stat_result.st_mtime_ns,
+        "audio_size": identity["audio_size"],
+        "audio_sha256": identity["audio_sha256"],
     }
     for key, value in expected.items():
         if payload.get(key) != value:
@@ -360,7 +409,6 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
             )
             if checkpoints_enabled:
                 write_checkpoint(checkpoint_dir, audio_path, "transcription", result)
-                remove_checkpoint(checkpoint_dir, audio_path, PARTIAL_TRANSCRIPTION_STAGE)
             results.append((result, audio_path, "transcription"))
         del model
         gc.collect()

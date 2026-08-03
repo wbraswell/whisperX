@@ -18,6 +18,8 @@ from whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 
+__version__ = "0.002"
+
 # WHISPERX_VAD_STAGE_PROGRESS_V1
 
 def find_numeral_symbol_tokens(tokenizer):
