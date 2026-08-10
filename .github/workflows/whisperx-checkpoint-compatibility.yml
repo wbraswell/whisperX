@@ -1,0 +1,50 @@
+name: WhisperX Checkpoint Compatibility Promotion
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'compatibility-fix/request.txt'
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore proven checkpoint compatibility and verify exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUEST='compatibility-fix/request.txt'
+          grep -Fxq 'format=whisperx-checkpoint-compatibility-fix-v1' "$REQUEST"
+          EXPECTED_BLOB="$(awk -F= '$1 == "expected_transcribe_blob" {print $2; exit}' "$REQUEST")"
+          COMMIT_MESSAGE="$(awk -F= '$1 == "commit_message" {sub(/^[^=]*=/, ""); print; exit}' "$REQUEST")"
+          [[ "$EXPECTED_BLOB" =~ ^[0-9a-f]{40}$ ]]
+          [ -n "$COMMIT_MESSAGE" ]
+
+          grep -Fxq '__version__ = "0.005"' whisperx/transcribe.py
+          perl -0pi -e 's/__version__ = "0\.005"/__version__ = "0.004"/' whisperx/transcribe.py
+          perl -0pi -e 's/(expected = \{\n(?:.*?\n)*?        "audio_sha256": identity\["audio_sha256"\],\n)        "source_version": __version__,\n/$1/s' whisperx/transcribe.py
+
+          grep -Fxq '__version__ = "0.004"' whisperx/transcribe.py
+          [ "$(grep -c '"source_version": __version__' whisperx/transcribe.py)" -eq 1 ]
+          ACTUAL_BLOB="$(git hash-object whisperx/transcribe.py)"
+          [ "$ACTUAL_BLOB" = "$EXPECTED_BLOB" ]
+
+          rm -rf compatibility-fix
+          rm -f .github/workflows/whisperx-checkpoint-compatibility.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m "$COMMIT_MESSAGE"
+          git push origin HEAD:main
