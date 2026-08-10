@@ -22,7 +22,7 @@ from whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 
-__version__ = "0.004"
+__version__ = "0.005"
 CHECKPOINT_FORMAT = "whisperx-stage-checkpoint-v2"
 PARTIAL_TRANSCRIPTION_STAGE = "transcription-partial"
 _AUDIO_IDENTITY_CACHE = {}
@@ -151,6 +151,7 @@ def read_checkpoint(checkpoint_dir, audio_path, stage):
         "stage": stage,
         "audio_size": identity["audio_size"],
         "audio_sha256": identity["audio_sha256"],
+        "source_version": __version__,
     }
     for key, value in expected.items():
         if payload.get(key) != value:
@@ -241,6 +242,8 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
     min_speakers = args.pop("min_speakers")
     max_speakers = args.pop("max_speakers")
     diarize_model_name = args.pop("diarize_model")
+    diarize_segmentation_batch_size = args.pop("diarize_segmentation_batch_size")
+    diarize_embedding_batch_size = args.pop("diarize_embedding_batch_size")
     print_progress = args.pop("print_progress")
     return_speaker_embeddings = args.pop("speaker_embeddings")
 
@@ -470,6 +473,8 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
                 token=hf_token,
                 device=device,
                 cache_dir=model_dir,
+                segmentation_batch_size=diarize_segmentation_batch_size,
+                embedding_batch_size=diarize_embedding_batch_size,
             )
             updated_results = []
             for result, audio_path, stage in results:
