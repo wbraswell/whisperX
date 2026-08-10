@@ -95,12 +95,27 @@ class DiarizationPipeline:
         token=None,
         device: Optional[Union[str, torch.device]] = "cpu",
         cache_dir=None,
+        segmentation_batch_size: Optional[int] = None,
+        embedding_batch_size: Optional[int] = None,
     ):
         if isinstance(device, str):
             device = torch.device(device)
         model_config = model_name or "pyannote/speaker-diarization-community-1"
         logger.info(f"Loading diarization model: {model_config}")
         self.model = Pipeline.from_pretrained(model_config, token=token, cache_dir=cache_dir).to(device)
+        if segmentation_batch_size is not None:
+            if segmentation_batch_size < 1:
+                raise ValueError("Diarization segmentation batch size must be positive.")
+            self.model.segmentation_batch_size = segmentation_batch_size
+        if embedding_batch_size is not None:
+            if embedding_batch_size < 1:
+                raise ValueError("Diarization embedding batch size must be positive.")
+            self.model.embedding_batch_size = embedding_batch_size
+        logger.info(
+            "Diarization batch sizes: segmentation=%s, embeddings=%s",
+            self.model.segmentation_batch_size,
+            self.model.embedding_batch_size,
+        )
 
     def __call__(
         self,
