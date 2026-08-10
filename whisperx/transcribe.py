@@ -22,7 +22,7 @@ from whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
 
-__version__ = "0.005"
+__version__ = "0.004"
 CHECKPOINT_FORMAT = "whisperx-stage-checkpoint-v2"
 PARTIAL_TRANSCRIPTION_STAGE = "transcription-partial"
 _AUDIO_IDENTITY_CACHE = {}
@@ -151,7 +151,6 @@ def read_checkpoint(checkpoint_dir, audio_path, stage):
         "stage": stage,
         "audio_size": identity["audio_size"],
         "audio_sha256": identity["audio_sha256"],
-        "source_version": __version__,
     }
     for key, value in expected.items():
         if payload.get(key) != value:
